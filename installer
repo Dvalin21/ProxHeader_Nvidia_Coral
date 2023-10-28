@@ -1,0 +1,67 @@
+#!/bin/bash
+
+# Check if the current user is root or in the sudo group
+if [[ $EUID -eq 0 ]]; then
+  # The user is root, run commands without sudo
+  SUDO=""
+else
+  # The user is not root, use sudo where necessary
+  SUDO="sudo"
+fi
+
+# Install PVE headers for the current kernel
+$SUDO apt install pve-headers-$(uname -r)
+
+# Blacklist the nouveau driver
+echo "blacklist nouveau" | $SUDO tee -a /etc/modprobe.d/blacklist.conf
+
+# Check for NVIDIA GPU and install NVIDIA drivers if detected
+if lspci | grep -i nvidia; then
+  echo "Nvidia GPU detected"
+  $SUDO apt-get update
+  $SUDO wget https://developer.download.nvidia.com/compute/cuda/12.3.0/local_installers/cuda-repo-debian12-12-3-local_12.3.0-545.23.06-1_amd64.deb
+  $SUDO dpkg -i cuda-repo-debian12-12-3-local_12.3.0-545.23.06-1_amd64.deb
+  $SUDO cp /var/cuda-repo-debian12-12-3-local/cuda-*-keyring.gpg /usr/share/keyrings/
+  $SUDO apt install -y software-properties-common
+  $SUDO add-apt-repository contrib
+  $SUDO apt-get update
+  $SUDO apt-get -y install cuda-toolkit-12-3
+  $SUDO apt-get install -y cuda-drivers
+
+  # Install NVIDIA container toolkit
+  $SUDO curl -fsSL https://nvidia.github.io/libnvidia-container/gpgkey | gpg --dearmor -o /usr/share/keyrings/nvidia-container-toolkit-keyring.gpg
+  $SUDO curl -s -L https://nvidia.github.io/libnvidia-container/stable/deb/nvidia-container-toolkit.list | \
+    sed 's#deb https://#deb [signed-by=/usr/share/keyrings/nvidia-container-toolkit-keyring.gpg] https://#g' | \
+    $SUDO tee /etc/apt/sources.list.d/nvidia-container-toolkit.list
+  $SUDO apt-get update
+  $SUDO apt-get install -y nvidia-container-toolkit
+
+  # Configure NVIDIA runtime for various runtimes
+  $SUDO nvidia-ctk runtime configure --runtime=docker
+  $SUDO nvidia-ctk runtime configure --runtime=containerd
+  $SUDO nvidia-ctk runtime configure --runtime=crio
+  $SUDO systemctl restart crio
+fi
+
+# Install radeontop, docker-compose, and add the user to necessary groups
+$SUDO apt install radeontop
+$SUDO apt install docker-compose
+$SUDO usermod -a -G video $LOGNAME
+$SUDO usermod -a -G render $LOGNAME
+
+# Check for Coral Edge TPU and perform installation
+if lspci -nn | grep 089a; then
+  echo "deb https://packages.cloud.google.com/apt coral-edgetpu-stable main" | $SUDO tee /etc/apt/sources.list.d/coral-edgetpu.list
+  $SUDO curl https://packages.cloud.google.com/apt/doc/apt-key.gpg | $SUDO apt-key add -
+  $SUDO apt-get update
+  $SUDO apt-get install gasket-dkms libedgetpu1-std
+  $SUDO sh -c "echo 'SUBSYSTEM==\"apex\", MODE=\"0660\", GROUP=\"apex\"' >> /etc/udev/rules.d/65-apex.rules"
+  $SUDO groupadd apex
+  $SUDO adduser $USER apex
+fi
+
+# Ask if you want to reboot
+read -p "Do you want to reboot? (y/n): " answer
+if [ "$answer" == "y" ]; then
+  $SUDO reboot
+fi
